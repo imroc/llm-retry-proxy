@@ -113,10 +113,6 @@ async fn start_proxy(
     Arc<ArcSwap<config::Config>>,
     Arc<metrics::Metrics>,
 ) {
-    // Disable TCP-level disconnect monitor in unit tests to avoid false positives.
-    // Disconnect detection is validated in E2E testing instead.
-    std::env::set_var("LLM_RETRY_PROXY_NO_DISCONNECT_MONITOR", "1");
-
     let cfg: config::Config = toml::from_str(config_str).unwrap();
     let config = Arc::new(ArcSwap::from_pointee(cfg));
     let metrics = metrics::Metrics::new();

@@ -5,7 +5,6 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -65,59 +64,28 @@ async fn handle_connection(
     client: reqwest::Client,
     version: &'static str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Client disconnect detection.
+    //
+    // A CancellationToken is passed to the proxy handler. It is used in
+    // tokio::select! during backoff waits and streaming to allow early
+    // cancellation when the client disconnects.
+    //
+    // Disconnect detection during streaming: the response body channel's
+    // sender.send() will fail when the receiver (hyper) drops the response
+    // body, which happens when the client disconnects.
+    //
+    // Disconnect detection during retry loop (before any response is sent):
+    // not actively monitored at TCP level. A TCP dup'd FD + MSG_PEEK approach
+    // was evaluated but rejected due to false positives from HTTP/1.1
+    // half-close behavior (clients sending "Connection: close" half-close
+    // the write side after the request, causing false EOF on the dup'd FD).
+    // See ADR-0002 for the design rationale and this trade-off.
+    //
+    // If the client disconnects during a retry backoff, the proxy will
+    // continue retrying until: the upstream returns a non-retryable response
+    // (then the write fails), or max_retries / max_total_wait is hit.
+    // This wastes at most one upstream request, which is acceptable.
     let disconnect_token = CancellationToken::new();
-
-    // Client disconnect detection via TCP dup'd FD + MSG_PEEK.
-    //
-    // The monitor waits for the socket to become readable (which happens on
-    // client disconnect: EOF or RST). It uses MSG_PEEK to avoid consuming
-    // data from the shared kernel buffer.
-    //
-    // Known limitation: if the client sends pipelined data while waiting for
-    // a response (rare with keep_alive(false) and LLM APIs), the monitor may
-    // trigger a false disconnect. This is acceptable for the target use case.
-    //
-    // The monitor can be disabled with LLM_RETRY_PROXY_NO_DISCONNECT_MONITOR=1
-    // for debugging or on platforms where dup/peek is not available.
-    if std::env::var("LLM_RETRY_PROXY_NO_DISCONNECT_MONITOR").is_err() {
-        let monitor_token = disconnect_token.clone();
-        if let Ok(monitor_stream) = dup_tcp_stream(&stream) {
-            tokio::spawn(async move {
-                let stream = monitor_stream;
-                loop {
-                    if stream.readable().await.is_err() {
-                        monitor_token.cancel();
-                        return;
-                    }
-                    match peek_tcp_stream(&stream) {
-                        Ok(0) | Err(_) => {
-                            monitor_token.cancel();
-                            return;
-                        }
-                        Ok(_) => {
-                            // Data available — could be a false positive.
-                            // Wait a short time and try again to confirm.
-                            // If it's a genuine disconnect, the next peek
-                            // will also return 0 or error.
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                            match peek_tcp_stream(&stream) {
-                                Ok(0) | Err(_) => {
-                                    monitor_token.cancel();
-                                    return;
-                                }
-                                Ok(_) => {
-                                    // Still data — treat as disconnect (client
-                                    // shouldn't send data while waiting).
-                                    monitor_token.cancel();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    }
 
     let io = TokioIo::new(stream);
     let service = service_fn(move |req: http::Request<Incoming>| {
@@ -139,55 +107,4 @@ async fn handle_connection(
 
     debug!("connection closed: {}", peer);
     Ok(())
-}
-
-/// Peek at a TCP stream using MSG_PEEK (does not consume data from buffer).
-#[cfg(unix)]
-fn peek_tcp_stream(stream: &TcpStream) -> std::io::Result<usize> {
-    use std::os::fd::AsRawFd;
-    let fd = stream.as_raw_fd();
-    let mut buf = [0u8; 1];
-    // SAFETY: recv with MSG_PEEK is a well-defined POSIX call. It reads data
-    // from the socket without removing it from the receive buffer.
-    let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut _, 1, libc::MSG_PEEK) };
-    if n < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(n as usize)
-    }
-}
-
-#[cfg(not(unix))]
-fn peek_tcp_stream(_stream: &TcpStream) -> std::io::Result<usize> {
-    Ok(1) // No-op on non-Unix; disconnect detection disabled
-}
-
-/// Duplicate a TcpStream by dup()'ing the underlying raw FD.
-#[cfg(unix)]
-fn dup_tcp_stream(stream: &TcpStream) -> std::io::Result<TcpStream> {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    let raw_fd = stream.as_raw_fd();
-    let new_fd = unsafe { libc::dup(raw_fd) };
-    if new_fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let flags = unsafe { libc::fcntl(new_fd, libc::F_GETFL) };
-    if flags < 0 {
-        unsafe { libc::close(new_fd) };
-        return Err(std::io::Error::last_os_error());
-    }
-    if unsafe { libc::fcntl(new_fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-        unsafe { libc::close(new_fd) };
-        return Err(std::io::Error::last_os_error());
-    }
-    let std_stream = unsafe { std::net::TcpStream::from_raw_fd(new_fd) };
-    TcpStream::from_std(std_stream)
-}
-
-#[cfg(not(unix))]
-fn dup_tcp_stream(_stream: &TcpStream) -> std::io::Result<TcpStream> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "stream cloning not supported on this platform",
-    ))
 }
