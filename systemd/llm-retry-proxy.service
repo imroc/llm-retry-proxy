@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/llm-retry-proxy --config /etc/llm-retry-proxy/config.toml --log-level info
+ExecStart=__BIN_PATH__ --config __CONFIG_PATH__ --log-level info
 Restart=on-failure
 RestartSec=3
 

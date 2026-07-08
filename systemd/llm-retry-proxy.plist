@@ -6,9 +6,9 @@
     <string>llm-retry-proxy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/llm-retry-proxy</string>
+        <string>__BIN_PATH__</string>
         <string>--config</string>
-        <string>/etc/llm-retry-proxy/config.toml</string>
+        <string>__CONFIG_PATH__</string>
         <string>--log-level</string>
         <string>info</string>
     </array>
