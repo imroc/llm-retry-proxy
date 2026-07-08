@@ -98,6 +98,7 @@ install-service-user:
 		cp config.example.toml $$CONFIG_DIR/config.toml; \
 		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
 		    -e 's|__CONFIG_PATH__|$$CONFIG_DIR/config.toml|' \
+		    -e 's|multi-user.target|default.target|' \
 		    systemd/llm-retry-proxy.service > $$SERVICE_DIR/llm-retry-proxy.service; \
 		systemctl --user daemon-reload; \
 		echo "Service file: $$SERVICE_DIR/llm-retry-proxy.service"; \
