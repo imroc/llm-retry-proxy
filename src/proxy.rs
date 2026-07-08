@@ -16,6 +16,7 @@ use crate::metrics::Metrics;
 use crate::retry::{
     compute_backoff_ms, compute_delay_ms, is_retryable_status, parse_retry_after_ms,
 };
+use crate::transform;
 
 const HOP_BY_HOP_REQUEST: &[&str] = &[
     "host",
@@ -177,7 +178,19 @@ pub async fn handle_request(
         format!("[{}]", route_name)
     };
 
-    let upstream_url = build_upstream_url(&route_config.target, rest);
+    // Protocol transform: /v1/responses → /v1/chat/completions
+    let transform_active = route_config.transform.as_deref() == Some(transform::RESPONSES_TO_CHAT);
+    // Rewrite path for upstream: strip the leading version prefix since
+    // target already contains it, then replace responses with chat/completions
+    let rest = if transform_active {
+        rest.replace("responses", "chat/completions")
+            .trim_start_matches("v1/")
+            .to_string()
+    } else {
+        rest.to_string()
+    };
+
+    let upstream_url = build_upstream_url(&route_config.target, &rest);
 
     let start_time = Instant::now();
     let mut attempt: u32 = 0;
@@ -216,13 +229,36 @@ pub async fn handle_request(
             );
         }
 
+        // Build request body (apply transform if active)
+        let request_body = if transform_active {
+            match transform::responses_to_chat_request(&body_bytes) {
+                Some(body) => {
+                    tracing::debug!("{} transform: responses → chat ({} bytes)", tag, body.len());
+                    body
+                }
+                None => {
+                    tracing::warn!("{} transform failed, sending original body", tag);
+                    body_bytes.clone()
+                }
+            }
+        } else {
+            body_bytes.clone()
+        };
+
+        tracing::debug!(
+            "{} upstream URL: {} body={}bytes",
+            tag,
+            upstream_url,
+            request_body.len()
+        );
+
         // Build request
         let req_builder = client
             .request(method.clone(), &upstream_url)
             .headers(forward_headers.clone());
 
         let req_builder = if has_body {
-            req_builder.body(body_bytes.clone())
+            req_builder.body(request_body)
         } else {
             req_builder
         };
@@ -326,14 +362,19 @@ pub async fn handle_request(
                 let duration = start_time.elapsed();
                 metrics.record_duration(route_name, duration);
 
-                return build_streaming_response(
-                    response,
-                    &route_name,
-                    &tag,
-                    &upstream_url,
-                    disconnect_token,
-                )
-                .await;
+                if transform_active {
+                    return build_transform_response(
+                        response,
+                        model.as_deref().unwrap_or(""),
+                        &tag,
+                        &upstream_url,
+                        disconnect_token,
+                    )
+                    .await;
+                }
+
+                return build_streaming_response(response, &tag, &upstream_url, disconnect_token)
+                    .await;
             }
             Err(e) => {
                 // Network error
@@ -411,7 +452,6 @@ pub async fn handle_request(
 
 async fn build_streaming_response(
     response: reqwest::Response,
-    route_name: &str,
     tag: &str,
     upstream_url: &str,
     disconnect_token: CancellationToken,
@@ -420,7 +460,6 @@ async fn build_streaming_response(
     let headers = strip_response_hop_by_hop(response.headers());
     let tag = tag.to_string();
     let upstream_url = upstream_url.to_string();
-    let _ = route_name; // route_name used by caller for metrics
 
     let (tx, rx) = mpsc::channel::<
         Result<hyper::body::Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
@@ -465,5 +504,113 @@ async fn build_streaming_response(
     for (key, value) in &headers {
         resp.headers_mut().insert(key.clone(), value.clone());
     }
+    resp
+}
+
+/// Build a response for the responses_to_chat transform.
+///
+/// For non-streaming: buffer the full body and convert.
+/// For streaming: convert SSE chunks in real time.
+async fn build_transform_response(
+    response: reqwest::Response,
+    model: &str,
+    tag: &str,
+    upstream_url: &str,
+    disconnect_token: CancellationToken,
+) -> Response<ResponseBody> {
+    let tag = tag.to_string();
+    let upstream_url = upstream_url.to_string();
+    let model = model.to_string();
+
+    // Check content-type to determine streaming vs non-streaming
+    let is_stream = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    if !is_stream {
+        // Non-streaming: buffer and convert
+        let chat_body = response.bytes().await.unwrap_or_default();
+        let converted = transform::chat_response_to_responses(&chat_body).unwrap_or(chat_body);
+        let mut resp = Response::new(
+            Full::new(converted)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                .boxed(),
+        );
+        *resp.status_mut() = StatusCode::OK;
+        resp.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        return resp;
+    }
+
+    // Streaming: convert SSE chunks
+    let (tx, rx) = mpsc::channel::<
+        Result<hyper::body::Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
+    >(32);
+
+    let tag_clone = tag.clone();
+    let url_clone = upstream_url.clone();
+    tokio::spawn(async move {
+        let mut response = response;
+        let mut state = transform::StreamTransformState::new(&model, None);
+        // Buffer for incomplete SSE lines
+        let mut buf = String::new();
+
+        loop {
+            tokio::select! {
+                chunk = response.chunk() => {
+                    match chunk {
+                        Ok(Some(bytes)) => {
+                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            // Process complete lines
+                            while let Some(i) = buf.find('\n') {
+                                let line = buf[..=i].trim_end().to_string();
+                                buf = buf[i+1..].to_string();
+                                if let Some(sse) = transform::transform_chat_sse_chunk(&line, &mut state) {
+                                    let data = Bytes::from(sse);
+                                    if tx.send(Ok(hyper::body::Frame::data(data))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            warn!("upstream stream error: {}", e);
+                            break;
+                        }
+                    }
+                }
+                _ = disconnect_token.cancelled() => {
+                    info!("{} -> {} client disconnected during transform streaming", tag_clone, url_clone);
+                    break;
+                }
+            }
+        }
+        // Flush any remaining data
+        if !buf.is_empty() {
+            if let Some(sse) = transform::transform_chat_sse_chunk("data: [DONE]", &mut state) {
+                let data = Bytes::from(sse);
+                let _ = tx.send(Ok(hyper::body::Frame::data(data))).await;
+            }
+        }
+        drop(response);
+    });
+
+    let stream = ReceiverStream::new(rx);
+    let body = StreamBody::new(stream);
+
+    let mut resp = Response::new(BodyExt::boxed(body));
+    *resp.status_mut() = StatusCode::OK;
+    resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        "text/event-stream".parse().unwrap(),
+    );
+    resp.headers_mut()
+        .insert("cache-control", "no-cache".parse().unwrap());
     resp
 }

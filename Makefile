@@ -1,4 +1,4 @@
-.PHONY: build run test install docker lint fmt fmt-check clean
+.PHONY: build run test install update docker lint fmt fmt-check clean
 
 BINARY = llm-retry-proxy
 TARGET_DIR = target/release
@@ -8,6 +8,21 @@ build:
 
 run:
 	cargo run -- --config config.toml --log-level info
+
+# Update: rebuild and replace the binary in PATH (for human verification after AI dev)
+update: build
+	@CURRENT_BIN=$$(which $(BINARY) 2>/dev/null) || { echo "$(BINARY) not found in PATH. Run 'make install' first."; exit 1; }; \
+	echo "Updating $$CURRENT_BIN..."; \
+	cp $(TARGET_DIR)/$(BINARY) "$$CURRENT_BIN"; \
+	chmod +x "$$CURRENT_BIN"; \
+	if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active $(BINARY) >/dev/null 2>&1; then \
+		systemctl --user restart $(BINARY); \
+		echo "Restarted user service."; \
+	elif command -v systemctl >/dev/null 2>&1 && systemctl is-active $(BINARY) >/dev/null 2>&1; then \
+		sudo systemctl restart $(BINARY); \
+		echo "Restarted system service."; \
+	fi; \
+	echo "Update complete: $$CURRENT_BIN → $$(./$(TARGET_DIR)/$(BINARY) --version 2>&1 | head -1)"
 
 test:
 	cargo test

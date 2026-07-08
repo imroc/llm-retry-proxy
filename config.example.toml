@@ -35,3 +35,11 @@ target = "https://api.deepseek.com"
 
 [routes.tokenhub]
 target = "https://tokenhub.tencentmaas.com"
+
+# Protocol transform example: convert /v1/responses → /v1/chat/completions
+# This enables AI tools like Codex (which use Responses API) to work with
+# any Chat Completions compatible API provider.
+#
+# [routes.tkehub-codex]
+# target = "http://tkehub.woa.com/v1"
+# transform = "responses_to_chat"

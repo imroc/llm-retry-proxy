@@ -46,6 +46,9 @@ impl Default for Defaults {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Route {
     pub target: String,
+    /// Protocol transform: "responses_to_chat" converts /v1/responses → /v1/chat/completions
+    #[serde(default)]
+    pub transform: Option<String>,
     #[serde(default)]
     pub max_retries: Option<u32>,
     #[serde(default)]
@@ -64,6 +67,7 @@ pub struct Route {
 #[derive(Debug, Clone)]
 pub struct ResolvedRouteConfig {
     pub target: String,
+    pub transform: Option<String>,
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
@@ -153,6 +157,7 @@ impl Config {
         let d = &self.defaults;
         Some(ResolvedRouteConfig {
             target: route.target.clone(),
+            transform: route.transform.clone(),
             max_retries: route.max_retries.unwrap_or(d.max_retries),
             base_delay_ms: route.base_delay_ms.unwrap_or(d.base_delay_ms),
             max_delay_ms: route.max_delay_ms.unwrap_or(d.max_delay_ms),
