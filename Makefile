@@ -92,17 +92,18 @@ install-service-user: BIN_PATH :=
 install-service-user:
 	@echo "Installing user-level systemd service..."
 	@if command -v systemctl >/dev/null 2>&1; then \
-		CONFIG_DIR=$(HOME)/.config/llm-retry-proxy; \
-		SERVICE_DIR=$(HOME)/.config/systemd/user; \
-		mkdir -p $$CONFIG_DIR $$SERVICE_DIR; \
-		cp config.example.toml $$CONFIG_DIR/config.toml; \
-		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
-		    -e 's|__CONFIG_PATH__|$$CONFIG_DIR/config.toml|' \
-		    -e 's|multi-user.target|default.target|' \
-		    systemd/llm-retry-proxy.service > $$SERVICE_DIR/llm-retry-proxy.service; \
+		CONFIG_DIR="$(HOME)/.config/llm-retry-proxy"; \
+		SERVICE_DIR="$(HOME)/.config/systemd/user"; \
+		mkdir -p "$$CONFIG_DIR" "$$SERVICE_DIR"; \
+		cp config.example.toml "$$CONFIG_DIR/config.toml"; \
+		CONFIG_PATH="$$CONFIG_DIR/config.toml"; \
+		sed -e "s|__BIN_PATH__|$(BIN_PATH)|" \
+		    -e "s|__CONFIG_PATH__|$$CONFIG_PATH|" \
+		    -e "s|multi-user.target|default.target|" \
+		    systemd/llm-retry-proxy.service > "$$SERVICE_DIR/llm-retry-proxy.service"; \
 		systemctl --user daemon-reload; \
 		echo "Service file: $$SERVICE_DIR/llm-retry-proxy.service"; \
-		echo "Config file:  $$CONFIG_DIR/config.toml"; \
+		echo "Config file:  $$CONFIG_PATH"; \
 		echo ""; \
 		echo "Enable and start with:"; \
 		echo "  systemctl --user enable --now llm-retry-proxy"; \
