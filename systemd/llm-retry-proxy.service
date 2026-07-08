@@ -1,0 +1,12 @@
+[Unit]
+Description=LLM Retry Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/llm-retry-proxy --config /etc/llm-retry-proxy/config.toml --log-level info
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+# LLM Retry Proxy Configuration
+#
+# Copy this file to config.toml and adjust as needed.
+# The proxy hot-reloads this file on changes — no restart needed.
+
+[defaults]
+# Maximum retry attempts (9999 = effectively unlimited)
+max_retries = 9999
+
+# Base delay for exponential backoff (milliseconds)
+base_delay_ms = 1000
+
+# Maximum delay cap for backoff (milliseconds)
+max_delay_ms = 60000
+
+# Total wait budget in milliseconds (0 = rely on client disconnect)
+# Set to a positive value as a safety net for clients without timeouts.
+max_total_wait_ms = 0
+
+# Connection establishment timeout (seconds)
+connect_timeout_secs = 30
+
+# HTTP status codes that trigger a retry
+retry_status_codes = [429, 500, 502, 503, 504, 408, 529]
+
+# Route definitions: each route maps a URL path prefix to an upstream API.
+# The first path segment of an incoming request URL is the route name.
+# Example: /tkehub/v1/chat/completions → routes.tkehub.target + /v1/chat/completions
+
+[routes.tkehub]
+target = "http://tkehub.woa.com"
+
+[routes.deepseek]
+target = "https://api.deepseek.com"
+
+[routes.tokenhub]
+target = "https://tokenhub.tencentmaas.com"
