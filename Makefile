@@ -17,12 +17,18 @@ update: build
 	chmod +x "$$CURRENT_BIN"; \
 	if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active $(BINARY) >/dev/null 2>&1; then \
 		systemctl --user restart $(BINARY); \
-		echo "Restarted user service."; \
+		echo "Restarted user systemd service."; \
 	elif command -v systemctl >/dev/null 2>&1 && systemctl is-active $(BINARY) >/dev/null 2>&1; then \
 		sudo systemctl restart $(BINARY); \
-		echo "Restarted system service."; \
+		echo "Restarted system systemd service."; \
+	elif command -v launchctl >/dev/null 2>&1 && launchctl list $(BINARY) >/dev/null 2>&1; then \
+		launchctl unload ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null; \
+		launchctl unload /Library/LaunchDaemons/$(BINARY).plist 2>/dev/null; \
+		launchctl load ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null || \
+		sudo launchctl load /Library/LaunchDaemons/$(BINARY).plist 2>/dev/null; \
+		echo "Reloaded launchd service."; \
 	fi; \
-	echo "Update complete: $$CURRENT_BIN → $$(./$(TARGET_DIR)/$(BINARY) --version 2>&1 | head -1)"
+	echo "Update complete: $$CURRENT_BIN → $$($(TARGET_DIR)/$(BINARY) --version 2>&1 | head -1)"
 
 test:
 	cargo test
@@ -35,6 +41,16 @@ fmt:
 
 fmt-check:
 	cargo fmt --check
+
+# Detect service manager: "systemd", "launchd", or "none"
+SERVICE_MANAGER := $(shell \
+	if command -v systemctl >/dev/null 2>&1; then \
+		echo systemd; \
+	elif command -v launchctl >/dev/null 2>&1; then \
+		echo launchd; \
+	else \
+		echo none; \
+	fi)
 
 install: build
 	@echo "Installing $(BINARY)..."
@@ -55,28 +71,43 @@ install: build
 	echo "Binary installed to: $$BIN_DIR/$(BINARY)"; \
 	BIN_PATH="$$BIN_DIR/$(BINARY)"; \
 	echo ""; \
-	echo "Install system service?"; \
-	echo "  1) Yes, system-wide (requires sudo)"; \
-	echo "  2) Yes, user-level (~/.config/systemd/user)"; \
-	echo "  3) No"; \
-	read -p "Select [1-3, default=3]: " svc_choice; \
-	case "$$svc_choice" in \
-		1) $(MAKE) install-service-system BIN_PATH="$$BIN_PATH" ;; \
-		2) $(MAKE) install-service-user BIN_PATH="$$BIN_PATH" ;; \
-		*) echo "Skipping service installation." ;; \
-	esac; \
+	if [ "$(SERVICE_MANAGER)" = "systemd" ]; then \
+		echo "Install systemd service?"; \
+		echo "  1) Yes, system-wide (requires sudo)"; \
+		echo "  2) Yes, user-level (~/.config/systemd/user)"; \
+		echo "  3) No"; \
+		read -p "Select [1-3, default=3]: " svc_choice; \
+		case "$$svc_choice" in \
+			1) $(MAKE) install-service-system BIN_PATH="$$BIN_PATH" ;; \
+			2) $(MAKE) install-service-user BIN_PATH="$$BIN_PATH" ;; \
+			*) echo "Skipping service installation." ;; \
+		esac; \
+	elif [ "$(SERVICE_MANAGER)" = "launchd" ]; then \
+		echo "Install launchd service?"; \
+		echo "  1) Yes, system-wide (requires sudo)"; \
+		echo "  2) Yes, user-level (~/Library/LaunchAgents)"; \
+		echo "  3) No"; \
+		read -p "Select [1-3, default=3]: " svc_choice; \
+		case "$$svc_choice" in \
+			1) $(MAKE) install-service-system BIN_PATH="$$BIN_PATH" ;; \
+			2) $(MAKE) install-service-user BIN_PATH="$$BIN_PATH" ;; \
+			*) echo "Skipping service installation." ;; \
+		esac; \
+	else \
+		echo "No supported service manager (systemd/launchd) found. Skipping service installation."; \
+	fi; \
 	echo ""; \
 	echo "=== Installation complete ==="
 
 install-service-system: BIN_PATH :=
 install-service-system:
-	@echo "Installing system-wide systemd service..."
-	@if command -v systemctl >/dev/null 2>&1; then \
-		sudo mkdir -p /etc/llm-retry-proxy; \
+	@if [ "$(SERVICE_MANAGER)" = "systemd" ]; then \
+		echo "Installing system-wide systemd service..."; \
+		sudo mkdir -p /etc/llm-retry-proxy /var/log/llm-retry-proxy; \
 		sudo cp config.example.toml /etc/llm-retry-proxy/config.toml; \
 		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
 		    -e 's|__CONFIG_PATH__|/etc/llm-retry-proxy/config.toml|' \
-		    systemd/llm-retry-proxy.service > /tmp/llm-retry-proxy.service; \
+		    services/llm-retry-proxy.service > /tmp/llm-retry-proxy.service; \
 		sudo cp /tmp/llm-retry-proxy.service /etc/systemd/system/; \
 		rm -f /tmp/llm-retry-proxy.service; \
 		sudo systemctl daemon-reload; \
@@ -86,12 +117,14 @@ install-service-system:
 		echo "Enable and start with:"; \
 		echo "  sudo systemctl enable --now llm-retry-proxy"; \
 		echo "  sudo systemctl status llm-retry-proxy"; \
-	elif command -v launchctl >/dev/null 2>&1; then \
-		sudo mkdir -p /etc/llm-retry-proxy; \
+	elif [ "$(SERVICE_MANAGER)" = "launchd" ]; then \
+		echo "Installing system-wide launchd service..."; \
+		sudo mkdir -p /etc/llm-retry-proxy /var/log/llm-retry-proxy; \
 		sudo cp config.example.toml /etc/llm-retry-proxy/config.toml; \
 		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
 		    -e 's|__CONFIG_PATH__|/etc/llm-retry-proxy/config.toml|' \
-		    systemd/llm-retry-proxy.plist > /tmp/llm-retry-proxy.plist; \
+		    -e 's|__LOG_PATH__|/var/log/llm-retry-proxy|' \
+		    services/llm-retry-proxy.plist > /tmp/llm-retry-proxy.plist; \
 		sudo cp /tmp/llm-retry-proxy.plist /Library/LaunchDaemons/; \
 		rm -f /tmp/llm-retry-proxy.plist; \
 		echo "Service file: /Library/LaunchDaemons/llm-retry-proxy.plist"; \
@@ -105,8 +138,8 @@ install-service-system:
 
 install-service-user: BIN_PATH :=
 install-service-user:
-	@echo "Installing user-level systemd service..."
-	@if command -v systemctl >/dev/null 2>&1; then \
+	@if [ "$(SERVICE_MANAGER)" = "systemd" ]; then \
+		echo "Installing user-level systemd service..."; \
 		CONFIG_DIR="$(HOME)/.config/llm-retry-proxy"; \
 		SERVICE_DIR="$(HOME)/.config/systemd/user"; \
 		mkdir -p "$$CONFIG_DIR" "$$SERVICE_DIR"; \
@@ -115,7 +148,7 @@ install-service-user:
 		sed -e "s|__BIN_PATH__|$(BIN_PATH)|" \
 		    -e "s|__CONFIG_PATH__|$$CONFIG_PATH|" \
 		    -e "s|multi-user.target|default.target|" \
-		    systemd/llm-retry-proxy.service > "$$SERVICE_DIR/llm-retry-proxy.service"; \
+		    services/llm-retry-proxy.service > "$$SERVICE_DIR/llm-retry-proxy.service"; \
 		systemctl --user daemon-reload; \
 		echo "Service file: $$SERVICE_DIR/llm-retry-proxy.service"; \
 		echo "Config file:  $$CONFIG_PATH"; \
@@ -126,8 +159,27 @@ install-service-user:
 		echo ""; \
 		echo "Note: For service to survive logout, run:"; \
 		echo "  loginctl enable-linger $$USER"; \
+	elif [ "$(SERVICE_MANAGER)" = "launchd" ]; then \
+		echo "Installing user-level launchd service..."; \
+		CONFIG_DIR="$(HOME)/.config/llm-retry-proxy"; \
+		AGENTS_DIR="$(HOME)/Library/LaunchAgents"; \
+		mkdir -p "$$CONFIG_DIR" "$$AGENTS_DIR"; \
+		cp config.example.toml "$$CONFIG_DIR/config.toml"; \
+		CONFIG_PATH="$$CONFIG_DIR/config.toml"; \
+		sed -e "s|__BIN_PATH__|$(BIN_PATH)|" \
+		    -e "s|__CONFIG_PATH__|$$CONFIG_PATH|" \
+		    -e "s|__LOG_PATH__|$$CONFIG_DIR|" \
+		    services/llm-retry-proxy.plist > "$$AGENTS_DIR/llm-retry-proxy.plist"; \
+		echo "Service file: $$AGENTS_DIR/llm-retry-proxy.plist"; \
+		echo "Config file:  $$CONFIG_PATH"; \
+		echo ""; \
+		echo "Load with:"; \
+		echo "  launchctl load $$AGENTS_DIR/llm-retry-proxy.plist"; \
+		echo ""; \
+		echo "Unload with:"; \
+		echo "  launchctl unload $$AGENTS_DIR/llm-retry-proxy.plist"; \
 	else \
-		echo "systemctl not found. User-level systemd not available. Skipping."; \
+		echo "No supported service manager found. Skipping."; \
 	fi
 
 docker:
