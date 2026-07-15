@@ -29,6 +29,13 @@ fn build_chat_request(body: &Value) -> Value {
         "stream": body.get("stream").unwrap_or(&json!(false)),
     });
 
+    // Streaming: request usage in stream so we can populate response.usage
+    // (Chat Completions API only returns usage in stream when stream_options.include_usage is true)
+    let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    if is_stream {
+        req["stream_options"] = json!({"include_usage": true});
+    }
+
     if let Some(v) = body.get("temperature") {
         if !v.is_null() {
             req["temperature"] = v.clone();
@@ -308,6 +315,8 @@ pub struct StreamTransformState {
     pub completed_tool_calls: Vec<ToolCallState>,
     /// Emitted header events? (response.created, in_progress, output_item.added, content_part.added)
     pub headers_emitted: bool,
+    /// Whether flush_stream_completion has already been called.
+    pub completed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +347,7 @@ impl StreamTransformState {
             active_tool_calls: Vec::new(),
             completed_tool_calls: Vec::new(),
             headers_emitted: false,
+            completed: false,
         }
     }
 }
@@ -573,6 +583,10 @@ fn close_msg_item(state: &mut StreamTransformState) -> String {
 }
 
 fn flush_stream_completion(state: &mut StreamTransformState) -> Option<String> {
+    if state.completed {
+        return None;
+    }
+    state.completed = true;
     let mut out = String::new();
 
     // Close text message if still open

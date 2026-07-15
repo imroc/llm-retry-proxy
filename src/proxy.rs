@@ -591,12 +591,12 @@ async fn build_transform_response(
                 }
             }
         }
-        // Flush any remaining data
-        if !buf.is_empty() {
-            if let Some(sse) = transform::transform_chat_sse_chunk("data: [DONE]", &mut state) {
-                let data = Bytes::from(sse);
-                let _ = tx.send(Ok(hyper::body::Frame::data(data))).await;
-            }
+        // Always flush stream completion -- even if upstream closed without [DONE],
+        // the client (Codex) needs response.completed to avoid "Reconnecting".
+        // The completed flag in state prevents double-flush if [DONE] was already seen.
+        if let Some(sse) = transform::transform_chat_sse_chunk("data: [DONE]", &mut state) {
+            let data = Bytes::from(sse);
+            let _ = tx.send(Ok(hyper::body::Frame::data(data))).await;
         }
         drop(response);
     });
