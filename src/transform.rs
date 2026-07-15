@@ -31,7 +31,10 @@ fn build_chat_request(body: &Value) -> Value {
 
     // Streaming: request usage in stream so we can populate response.usage
     // (Chat Completions API only returns usage in stream when stream_options.include_usage is true)
-    let is_stream = body.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_stream = body
+        .get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if is_stream {
         req["stream_options"] = json!({"include_usage": true});
     }
