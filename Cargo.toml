@@ -1,6 +1,6 @@
 [package]
 name = "llm-retry-proxy"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Transparent local reverse proxy with unlimited automatic retry for OpenAI-compatible LLM APIs"

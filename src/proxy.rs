@@ -187,9 +187,9 @@ pub async fn handle_request(
         let stripped = rest
             .strip_prefix("v1/")
             .or_else(|| rest.strip_prefix("v2/"))
-            .unwrap_or(&rest);
-        stripped.replace("responses", "chat/completions")
-            .trim_start_matches("v1/")
+            .unwrap_or(rest);
+        stripped
+            .replace("responses", "chat/completions")
             .to_string()
     } else {
         rest.to_string()
