@@ -183,7 +183,12 @@ pub async fn handle_request(
     // Rewrite path for upstream: strip the leading version prefix since
     // target already contains it, then replace responses with chat/completions
     let rest = if transform_active {
-        rest.replace("responses", "chat/completions")
+        // Strip leading "v1/" or "v2/" version prefix (target already contains it)
+        let stripped = rest
+            .strip_prefix("v1/")
+            .or_else(|| rest.strip_prefix("v2/"))
+            .unwrap_or(&rest);
+        stripped.replace("responses", "chat/completions")
             .trim_start_matches("v1/")
             .to_string()
     } else {
