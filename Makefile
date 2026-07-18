@@ -10,24 +10,25 @@ run:
 	cargo run -- --config config.toml --log-level info
 
 # Update: rebuild and replace the binary in PATH (for human verification after AI dev)
+# Must stop service before cp to avoid "Text file busy", then start after.
 update: build
 	@CURRENT_BIN=$$(which $(BINARY) 2>/dev/null) || { echo "$(BINARY) not found in PATH. Run 'make install' first."; exit 1; }; \
 	echo "Updating $$CURRENT_BIN..."; \
+	if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active $(BINARY) >/dev/null 2>&1; then \
+		SVC_TYPE=user; systemctl --user stop $(BINARY); \
+	elif command -v systemctl >/dev/null 2>&1 && systemctl is-active $(BINARY) >/dev/null 2>&1; then \
+		SVC_TYPE=system; sudo systemctl stop $(BINARY); \
+	elif command -v launchctl >/dev/null 2>&1 && launchctl list $(BINARY) >/dev/null 2>&1; then \
+		SVC_TYPE=launchd; launchctl unload ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null; \
+	else SVC_TYPE=none; fi; \
 	cp $(TARGET_DIR)/$(BINARY) "$$CURRENT_BIN"; \
 	chmod +x "$$CURRENT_BIN"; \
-	if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active $(BINARY) >/dev/null 2>&1; then \
-		systemctl --user restart $(BINARY); \
-		echo "Restarted user systemd service."; \
-	elif command -v systemctl >/dev/null 2>&1 && systemctl is-active $(BINARY) >/dev/null 2>&1; then \
-		sudo systemctl restart $(BINARY); \
-		echo "Restarted system systemd service."; \
-	elif command -v launchctl >/dev/null 2>&1 && launchctl list $(BINARY) >/dev/null 2>&1; then \
-		launchctl unload ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null; \
-		launchctl unload /Library/LaunchDaemons/$(BINARY).plist 2>/dev/null; \
-		launchctl load ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null || \
-		sudo launchctl load /Library/LaunchDaemons/$(BINARY).plist 2>/dev/null; \
-		echo "Reloaded launchd service."; \
-	fi; \
+	case "$$SVC_TYPE" in \
+		user) systemctl --user start $(BINARY); echo "Restarted user systemd service." ;; \
+		system) sudo systemctl start $(BINARY); echo "Restarted system systemd service." ;; \
+		launchd) launchctl load ~/Library/LaunchAgents/$(BINARY).plist 2>/dev/null || sudo launchctl load /Library/LaunchDaemons/$(BINARY).plist 2>/dev/null; echo "Reloaded launchd service." ;; \
+		none) echo "No service manager detected, binary updated in place." ;; \
+	esac; \
 	echo "Update complete: $$CURRENT_BIN → $$($(TARGET_DIR)/$(BINARY) --version 2>&1 | head -1)"
 
 test:

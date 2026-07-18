@@ -96,6 +96,28 @@ fn build_upstream_url(target: &str, rest: &str) -> String {
     format!("{}/{}", target, rest)
 }
 
+/// Rewrite the `model` field in a JSON request body.
+///
+/// If the body is not valid JSON or has no `model` field, returns the original bytes.
+fn rewrite_model_in_body(body: &[u8], new_model: &str) -> Bytes {
+    let mut value: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return Bytes::copy_from_slice(body),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            serde_json::Value::String(new_model.to_string()),
+        );
+        match serde_json::to_vec(&value) {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(_) => Bytes::copy_from_slice(body),
+        }
+    } else {
+        Bytes::copy_from_slice(body)
+    }
+}
+
 pub async fn handle_request(
     req: Request<hyper::body::Incoming>,
     config: Arc<ArcSwap<Config>>,
@@ -149,8 +171,6 @@ pub async fn handle_request(
         }
     };
 
-    metrics.record_request(route_name);
-
     // Extract headers before consuming body
     let forward_headers = build_forward_headers(req.headers());
 
@@ -171,12 +191,42 @@ pub async fn handle_request(
         Bytes::new()
     };
 
-    let model = extract_model(&body_bytes);
-    let tag = if let Some(ref m) = model {
-        format!("[{}|{}]", route_name, m)
+    // Extract client model and resolve model-level config
+    let client_model = extract_model(&body_bytes);
+    let model_str = client_model.as_deref().unwrap_or("");
+
+    // Two-step resolve: route-level → model-level
+    let route_config = if let Some(ref model) = client_model {
+        route_config.resolve_model(model)
+    } else {
+        route_config
+    };
+
+    // Rewrite model in request body if upstream_model is configured
+    let body_bytes = if let Some(ref upstream_model) = route_config.upstream_model {
+        if upstream_model != model_str {
+            tracing::debug!(
+                "[{}|{}] rewriting model: {} → {}",
+                route_name,
+                model_str,
+                model_str,
+                upstream_model
+            );
+            rewrite_model_in_body(&body_bytes, upstream_model)
+        } else {
+            body_bytes
+        }
+    } else {
+        body_bytes
+    };
+
+    let tag = if !model_str.is_empty() {
+        format!("[{}|{}]", route_name, model_str)
     } else {
         format!("[{}]", route_name)
     };
+
+    metrics.record_request(route_name, model_str);
 
     // Protocol transform: /v1/responses → /v1/chat/completions
     let transform_active = route_config.transform.as_deref() == Some(transform::RESPONSES_TO_CHAT);
@@ -196,6 +246,13 @@ pub async fn handle_request(
     };
 
     let upstream_url = build_upstream_url(&route_config.target, &rest);
+
+    // Determine the model name to use in responses (for rewrite_response_model)
+    let response_rewrite_model = if route_config.rewrite_response_model {
+        Some(model_str.to_string())
+    } else {
+        None
+    };
 
     let start_time = Instant::now();
     let mut attempt: u32 = 0;
@@ -336,7 +393,7 @@ pub async fn handle_request(
                         }
                     );
 
-                    metrics.record_retry(route_name);
+                    metrics.record_retry(route_name, model_str);
                     attempt += 1;
                     total_wait_ms += delay_ms;
 
@@ -363,14 +420,25 @@ pub async fn handle_request(
                 }
 
                 // Non-retryable or exhausted: stream response to client
-                metrics.record_upstream_status(route_name, status);
+                metrics.record_upstream_status(route_name, model_str, status);
                 let duration = start_time.elapsed();
-                metrics.record_duration(route_name, duration);
+                metrics.record_duration(route_name, model_str, duration);
 
                 if transform_active {
                     return build_transform_response(
                         response,
-                        model.as_deref().unwrap_or(""),
+                        response_rewrite_model.as_deref(),
+                        &tag,
+                        &upstream_url,
+                        disconnect_token,
+                    )
+                    .await;
+                }
+
+                if response_rewrite_model.is_some() {
+                    return build_streaming_response_with_rewrite(
+                        response,
+                        response_rewrite_model.as_deref().unwrap_or(""),
                         &tag,
                         &upstream_url,
                         disconnect_token,
@@ -434,7 +502,7 @@ pub async fn handle_request(
                     e
                 );
 
-                metrics.record_retry(route_name);
+                metrics.record_retry(route_name, model_str);
                 attempt += 1;
                 total_wait_ms += delay_ms;
 
@@ -512,20 +580,166 @@ async fn build_streaming_response(
     resp
 }
 
+/// Build a streaming response with model field rewriting.
+///
+/// For SSE responses: parse each `data: {...}` line, replace the `model` field, re-serialize.
+/// For non-SSE responses: buffer the full body, parse JSON, replace model, send.
+async fn build_streaming_response_with_rewrite(
+    response: reqwest::Response,
+    rewrite_model: &str,
+    tag: &str,
+    upstream_url: &str,
+    disconnect_token: CancellationToken,
+) -> Response<ResponseBody> {
+    let status = response.status();
+    let headers = strip_response_hop_by_hop(response.headers());
+    let is_sse = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false);
+
+    let tag = tag.to_string();
+    let upstream_url = upstream_url.to_string();
+    let rewrite_model = rewrite_model.to_string();
+
+    if !is_sse {
+        // Non-SSE: buffer full body, parse JSON, replace model
+        let body_bytes = response.bytes().await.unwrap_or_default();
+        let rewritten = rewrite_model_in_json(&body_bytes, &rewrite_model);
+        let mut resp = Response::new(
+            Full::new(rewritten)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+                .boxed(),
+        );
+        *resp.status_mut() = status;
+        for (key, value) in &headers {
+            resp.headers_mut().insert(key.clone(), value.clone());
+        }
+        return resp;
+    }
+
+    // SSE streaming with model rewrite
+    let (tx, rx) = mpsc::channel::<
+        Result<hyper::body::Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
+    >(32);
+
+    let tag_clone = tag.clone();
+    let url_clone = upstream_url.clone();
+    tokio::spawn(async move {
+        let mut response = response;
+        let mut buf = String::new();
+
+        loop {
+            tokio::select! {
+                chunk = response.chunk() => {
+                    match chunk {
+                        Ok(Some(bytes)) => {
+                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            // Process complete lines
+                            while let Some(i) = buf.find('\n') {
+                                let line = buf[..=i].to_string();
+                                buf = buf[i+1..].to_string();
+                                let rewritten = rewrite_model_in_sse_line(&line, &rewrite_model);
+                                let data = Bytes::from(rewritten);
+                                if tx.send(Ok(hyper::body::Frame::data(data))).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            warn!("upstream stream error: {}", e);
+                            break;
+                        }
+                    }
+                }
+                _ = disconnect_token.cancelled() => {
+                    info!("{} -> {} client disconnected during streaming (rewrite)", tag_clone, url_clone);
+                    break;
+                }
+            }
+        }
+        drop(response);
+    });
+
+    let stream = ReceiverStream::new(rx);
+    let body = StreamBody::new(stream);
+
+    let mut resp = Response::new(BodyExt::boxed(body));
+    *resp.status_mut() = status;
+    resp.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        "text/event-stream".parse().unwrap(),
+    );
+    resp.headers_mut()
+        .insert("cache-control", "no-cache".parse().unwrap());
+    resp
+}
+
+/// Rewrite the `model` field in a JSON body.
+fn rewrite_model_in_json(body: &[u8], new_model: &str) -> Bytes {
+    let mut value: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return Bytes::copy_from_slice(body),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            serde_json::Value::String(new_model.to_string()),
+        );
+    }
+    match serde_json::to_vec(&value) {
+        Ok(bytes) => Bytes::from(bytes),
+        Err(_) => Bytes::copy_from_slice(body),
+    }
+}
+
+/// Rewrite the `model` field in a single SSE line.
+///
+/// SSE lines that are not `data: {json}` are passed through unchanged.
+fn rewrite_model_in_sse_line(line: &str, new_model: &str) -> String {
+    let trimmed = line.trim_end();
+    let Some(json_str) = trimmed.strip_prefix("data: ") else {
+        return line.to_string();
+    };
+    let json_str = json_str.trim();
+    if json_str == "[DONE]" {
+        return line.to_string();
+    }
+    let mut value: serde_json::Value = match serde_json::from_str(json_str) {
+        Ok(v) => v,
+        Err(_) => return line.to_string(),
+    };
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            serde_json::Value::String(new_model.to_string()),
+        );
+    }
+    match serde_json::to_string(&value) {
+        Ok(serialized) => format!("data: {}\n\n", serialized),
+        Err(_) => line.to_string(),
+    }
+}
+
 /// Build a response for the responses_to_chat transform.
 ///
 /// For non-streaming: buffer the full body and convert.
 /// For streaming: convert SSE chunks in real time.
+///
+/// `rewrite_model`: if Some, use this model name in the response output instead
+/// of the upstream model (for rewrite_response_model).
 async fn build_transform_response(
     response: reqwest::Response,
-    model: &str,
+    rewrite_model: Option<&str>,
     tag: &str,
     upstream_url: &str,
     disconnect_token: CancellationToken,
 ) -> Response<ResponseBody> {
     let tag = tag.to_string();
     let upstream_url = upstream_url.to_string();
-    let model = model.to_string();
 
     // Check content-type to determine streaming vs non-streaming
     let is_stream = response
@@ -538,7 +752,8 @@ async fn build_transform_response(
     if !is_stream {
         // Non-streaming: buffer and convert
         let chat_body = response.bytes().await.unwrap_or_default();
-        let converted = transform::chat_response_to_responses(&chat_body).unwrap_or(chat_body);
+        let converted =
+            transform::chat_response_to_responses(&chat_body, rewrite_model).unwrap_or(chat_body);
         let mut resp = Response::new(
             Full::new(converted)
                 .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
@@ -553,6 +768,9 @@ async fn build_transform_response(
     }
 
     // Streaming: convert SSE chunks
+    // Use the rewrite model if provided, otherwise extract from the first response chunk
+    let stream_model = rewrite_model.unwrap_or("").to_string();
+
     let (tx, rx) = mpsc::channel::<
         Result<hyper::body::Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>>,
     >(32);
@@ -561,6 +779,8 @@ async fn build_transform_response(
     let url_clone = upstream_url.clone();
     tokio::spawn(async move {
         let mut response = response;
+        // Determine model: if rewrite_model is set, use it; otherwise extract from first chunk
+        let mut model = stream_model.clone();
         let mut state = transform::StreamTransformState::new(&model, None);
         // Buffer for incomplete SSE lines
         let mut buf = String::new();
@@ -575,6 +795,13 @@ async fn build_transform_response(
                             while let Some(i) = buf.find('\n') {
                                 let line = buf[..=i].trim_end().to_string();
                                 buf = buf[i+1..].to_string();
+                                // If we don't have a model yet (rewrite not set), try to extract from the chunk
+                                if model.is_empty() {
+                                    if let Some(m) = extract_model_from_sse_line(&line) {
+                                        model = m;
+                                        state.model = model.clone();
+                                    }
+                                }
                                 if let Some(sse) = transform::transform_chat_sse_chunk(&line, &mut state) {
                                     let data = Bytes::from(sse);
                                     if tx.send(Ok(hyper::body::Frame::data(data))).await.is_err() {
@@ -618,4 +845,14 @@ async fn build_transform_response(
     resp.headers_mut()
         .insert("cache-control", "no-cache".parse().unwrap());
     resp
+}
+
+/// Extract model name from an SSE `data: {...}` line.
+fn extract_model_from_sse_line(line: &str) -> Option<String> {
+    let data_str = line.strip_prefix("data: ")?.trim();
+    if data_str == "[DONE]" {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(data_str).ok()?;
+    value.get("model")?.as_str().map(|s| s.to_string())
 }

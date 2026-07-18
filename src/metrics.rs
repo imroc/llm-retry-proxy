@@ -18,14 +18,14 @@ impl Metrics {
 
         let requests_total = IntCounterVec::new(
             Opts::new("proxy_requests_total", "Total requests received"),
-            &["route"],
+            &["route", "model"],
         )
         .unwrap();
         registry.register(Box::new(requests_total.clone())).ok();
 
         let retries_total = IntCounterVec::new(
             Opts::new("proxy_retries_total", "Total retry attempts"),
-            &["route"],
+            &["route", "model"],
         )
         .unwrap();
         registry.register(Box::new(retries_total.clone())).ok();
@@ -35,7 +35,7 @@ impl Metrics {
                 "proxy_upstream_status_total",
                 "Upstream status code distribution",
             ),
-            &["route", "status"],
+            &["route", "model", "status"],
         )
         .unwrap();
         registry
@@ -47,7 +47,7 @@ impl Metrics {
                 "proxy_request_duration_seconds",
                 "Request duration in seconds",
             ),
-            &["route"],
+            &["route", "model"],
         )
         .unwrap();
         registry
@@ -63,23 +63,23 @@ impl Metrics {
         })
     }
 
-    pub fn record_request(&self, route: &str) {
-        self.requests_total.with_label_values(&[route]).inc();
+    pub fn record_request(&self, route: &str, model: &str) {
+        self.requests_total.with_label_values(&[route, model]).inc();
     }
 
-    pub fn record_retry(&self, route: &str) {
-        self.retries_total.with_label_values(&[route]).inc();
+    pub fn record_retry(&self, route: &str, model: &str) {
+        self.retries_total.with_label_values(&[route, model]).inc();
     }
 
-    pub fn record_upstream_status(&self, route: &str, status: u16) {
+    pub fn record_upstream_status(&self, route: &str, model: &str, status: u16) {
         self.upstream_status_total
-            .with_label_values(&[route, &status.to_string()])
+            .with_label_values(&[route, model, &status.to_string()])
             .inc();
     }
 
-    pub fn record_duration(&self, route: &str, duration: Duration) {
+    pub fn record_duration(&self, route: &str, model: &str, duration: Duration) {
         self.request_duration_seconds
-            .with_label_values(&[route])
+            .with_label_values(&[route, model])
             .observe(duration.as_secs_f64());
     }
 

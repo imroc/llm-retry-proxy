@@ -43,3 +43,39 @@ target = "https://tokenhub.tencentmaas.com"
 # [routes.tkehub-codex]
 # target = "http://tkehub.woa.com/v1"
 # transform = "responses_to_chat"
+
+# ── Model-level routing ────────────────────────────────────────────────────
+#
+# When the request body contains a `model` field, the proxy looks it up in
+# the route's `models` map. If found, model-level config overrides the
+# route-level config. If not found, the route-level config is used as-is.
+#
+# This enables a single route (provider) to manage multiple models from
+# different upstreams — ideal for AI CLI tools like Codex that only allow
+# model switching within the same provider.
+#
+# Model-level fields (all optional — only specified fields override):
+#   target              — upstream API URL
+#   transform           — "responses_to_chat" or "none" to explicitly disable
+#   upstream_model      — rewrite the `model` field in the request body
+#   rewrite_response_model — rewrite the `model` field in responses back to
+#                            the client's original model name (default: false)
+#   max_retries, base_delay_ms, max_delay_ms, max_total_wait_ms,
+#   connect_timeout_secs, retry_status_codes
+#
+# Example: single route managing multiple providers for Codex
+#
+# [routes.tkehub]
+# target = "http://tkehub.woa.com"
+# transform = "responses_to_chat"  # route-level default for all models
+#
+# # GLM supports Responses API natively — direct passthrough, no transform
+# [routes.tkehub.models."tke/glm-latest"]
+# transform = "none"
+#
+# # DeepSeek goes to a different upstream, needs transform + model name mapping
+# [routes.tkehub.models."tke/deepseek-flash-latest"]
+# target = "https://tokenhub.tencentmaas.com"
+# upstream_model = "deepseek-chat"
+# rewrite_response_model = true
+# max_delay_ms = 30000

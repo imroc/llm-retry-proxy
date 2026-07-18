@@ -43,12 +43,51 @@ impl Default for Defaults {
     }
 }
 
+/// Model-level override configuration.
+///
+/// All fields are optional — only specified fields override the route-level config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelConfig {
+    pub target: Option<String>,
+    /// Protocol transform: "responses_to_chat" or "none" to explicitly disable.
+    #[serde(default)]
+    pub transform: Option<String>,
+    /// Rewrite the `model` field in the request body before forwarding upstream.
+    #[serde(default)]
+    pub upstream_model: Option<String>,
+    /// Rewrite the `model` field in the response back to the client's original model name.
+    #[serde(default)]
+    pub rewrite_response_model: Option<bool>,
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    #[serde(default)]
+    pub base_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub max_delay_ms: Option<u64>,
+    #[serde(default)]
+    pub max_total_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub connect_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub retry_status_codes: Option<Vec<u16>>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Route {
     pub target: String,
-    /// Protocol transform: "responses_to_chat" converts /v1/responses → /v1/chat/completions
+    /// Protocol transform: "responses_to_chat" converts /v1/responses → /v1/chat/completions.
+    /// Use "none" to explicitly disable a route-level transform for specific models.
     #[serde(default)]
     pub transform: Option<String>,
+    /// Rewrite the `model` field in the request body before forwarding upstream.
+    #[serde(default)]
+    pub upstream_model: Option<String>,
+    /// Rewrite the `model` field in the response back to the client's original model name.
+    #[serde(default)]
+    pub rewrite_response_model: Option<bool>,
+    /// Model-level overrides: keyed by the model name extracted from the request body.
+    #[serde(default)]
+    pub models: HashMap<String, ModelConfig>,
     #[serde(default)]
     pub max_retries: Option<u32>,
     #[serde(default)]
@@ -64,10 +103,14 @@ pub struct Route {
 }
 
 /// Resolved route config: route-level overrides merged with defaults.
+/// Call `resolve_model()` to further apply model-level overrides.
 #[derive(Debug, Clone)]
 pub struct ResolvedRouteConfig {
     pub target: String,
     pub transform: Option<String>,
+    pub upstream_model: Option<String>,
+    pub rewrite_response_model: bool,
+    pub models: HashMap<String, ModelConfig>,
     pub max_retries: u32,
     pub base_delay_ms: u64,
     pub max_delay_ms: u64,
@@ -90,6 +133,15 @@ fn default_connect_timeout_secs() -> u64 {
 }
 fn default_retry_status_codes() -> Vec<u16> {
     vec![429, 500, 502, 503, 504, 408, 529]
+}
+
+/// Normalize transform value: "none" → None (explicit disable).
+fn normalize_transform(t: &Option<String>) -> Option<String> {
+    match t {
+        Some(s) if s == "none" => None,
+        Some(s) => Some(s.clone()),
+        None => None,
+    }
 }
 
 #[derive(Debug)]
@@ -139,6 +191,29 @@ impl Config {
                     name, route.target, e
                 )));
             }
+            // Validate model-level configs
+            for (model_name, mc) in &route.models {
+                if model_name.is_empty() {
+                    return Err(ConfigError(format!(
+                        "route '{}' has a model entry with empty name",
+                        name
+                    )));
+                }
+                if let Some(ref target) = mc.target {
+                    if target.is_empty() {
+                        return Err(ConfigError(format!(
+                            "route '{}' model '{}' has empty target",
+                            name, model_name
+                        )));
+                    }
+                    if let Err(e) = target.parse::<http::Uri>() {
+                        return Err(ConfigError(format!(
+                            "route '{}' model '{}' target '{}' is not a valid URL: {}",
+                            name, model_name, target, e
+                        )));
+                    }
+                }
+            }
         }
         if self.defaults.max_retries == 0 {
             return Err(ConfigError("defaults.max_retries must be > 0".into()));
@@ -157,7 +232,10 @@ impl Config {
         let d = &self.defaults;
         Some(ResolvedRouteConfig {
             target: route.target.clone(),
-            transform: route.transform.clone(),
+            transform: normalize_transform(&route.transform),
+            upstream_model: route.upstream_model.clone(),
+            rewrite_response_model: route.rewrite_response_model.unwrap_or(false),
+            models: route.models.clone(),
             max_retries: route.max_retries.unwrap_or(d.max_retries),
             base_delay_ms: route.base_delay_ms.unwrap_or(d.base_delay_ms),
             max_delay_ms: route.max_delay_ms.unwrap_or(d.max_delay_ms),
@@ -172,6 +250,54 @@ impl Config {
 
     pub fn route_names(&self) -> Vec<&str> {
         self.routes.keys().map(|s| s.as_str()).collect()
+    }
+}
+
+impl ResolvedRouteConfig {
+    /// Apply model-level overrides on top of the resolved route config.
+    ///
+    /// If the model is not found in the models map, returns a clone of self unchanged.
+    pub fn resolve_model(&self, model: &str) -> ResolvedRouteConfig {
+        let Some(mc) = self.models.get(model) else {
+            return self.clone();
+        };
+        let mut result = self.clone();
+        if let Some(t) = &mc.target {
+            result.target = t.clone();
+        }
+        if let Some(t) = &mc.transform {
+            result.transform = normalize_transform(&Some(t.clone()));
+        }
+        if let Some(v) = &mc.upstream_model {
+            result.upstream_model = Some(v.clone());
+        }
+        if let Some(v) = mc.rewrite_response_model {
+            result.rewrite_response_model = v;
+        }
+        if let Some(v) = mc.max_retries {
+            result.max_retries = v;
+        }
+        if let Some(v) = mc.base_delay_ms {
+            result.base_delay_ms = v;
+        }
+        if let Some(v) = mc.max_delay_ms {
+            result.max_delay_ms = v;
+        }
+        if let Some(v) = mc.max_total_wait_ms {
+            result.max_total_wait_ms = v;
+        }
+        if let Some(v) = mc.connect_timeout_secs {
+            result.connect_timeout_secs = v;
+        }
+        if let Some(v) = &mc.retry_status_codes {
+            result.retry_status_codes = v.clone();
+        }
+        result
+    }
+
+    /// List model names configured for this route.
+    pub fn model_names(&self) -> Vec<&str> {
+        self.models.keys().map(|s| s.as_str()).collect()
     }
 }
 
@@ -198,13 +324,9 @@ impl ConfigWatcher {
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     match Config::load(&path) {
                         Ok(new_config) => {
-                            let route_names: Vec<String> = new_config
-                                .route_names()
-                                .into_iter()
-                                .map(|s| s.to_string())
-                                .collect();
+                            let route_names = new_config.route_names();
+                            info!("config reloaded: routes = {}", route_names.join(", "));
                             config.store(Arc::new(new_config));
-                            info!("config reloaded (routes: {})", route_names.join(", "));
                         }
                         Err(e) => {
                             warn!("config reload failed, keeping old config: {}", e);
@@ -215,13 +337,10 @@ impl ConfigWatcher {
         })
         .map_err(|e| ConfigError(format!("failed to create file watcher: {}", e)))?;
 
-        // Watch the parent directory to catch atomic save (rename)
-        let watch_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         watcher
-            .watch(&watch_dir, RecursiveMode::NonRecursive)
-            .map_err(|e| ConfigError(format!("failed to watch {}: {}", watch_dir.display(), e)))?;
+            .watch(&path, RecursiveMode::NonRecursive)
+            .map_err(|e| ConfigError(format!("failed to watch config file: {}", e)))?;
 
-        info!("watching config file: {}", path.display());
-        Ok(ConfigWatcher { _watcher: watcher })
+        Ok(Self { _watcher: watcher })
     }
 }

@@ -18,7 +18,8 @@ This proxy sits between the CLI tool and the API, transparently retrying request
 - **Streaming support** — SSE streaming passthrough without buffering
 - **Client-aware** — detects client disconnect immediately (even during backoff) and stops retrying
 - **Hot-reload config** — add/remove routes without restart
-- **Prometheus metrics** — monitor retry rates and upstream status
+- **Model-level routing** — route different models to different upstreams within a single route, enabling single-provider multi-model scenarios for tools like Codex
+- **Prometheus metrics** — monitor retry rates and upstream status (per route + model)
 - **Single binary** — low memory footprint, written in Rust
 
 ## Quick Start
@@ -59,6 +60,37 @@ target = "https://api.example.com"
 ```
 
 See [config.example.toml](./config.example.toml) for a complete example.
+
+### Model-level Routing
+
+When the request body contains a `model` field, the proxy looks it up in the route's `models` map. If found, model-level config overrides the route-level config. This enables a single route (provider) to manage multiple models from different upstreams — ideal for AI CLI tools that only allow model switching within the same provider.
+
+```toml
+[routes.tkehub]
+target = "http://tkehub.woa.com"
+transform = "responses_to_chat"  # route-level default
+
+# GLM supports Responses API natively — direct passthrough, no transform
+[routes.tkehub.models."tke/glm-latest"]
+transform = "none"
+
+# DeepSeek goes to a different upstream with model name mapping
+[routes.tkehub.models."tke/deepseek-flash-latest"]
+target = "https://tokenhub.tencentmaas.com"
+upstream_model = "deepseek-chat"
+rewrite_response_model = true
+max_delay_ms = 30000
+```
+
+Model-level fields (all optional — only specified fields override):
+
+| Field | Description |
+|-------|-------------|
+| `target` | Upstream API URL |
+| `transform` | `"responses_to_chat"` or `"none"` to explicitly disable |
+| `upstream_model` | Rewrite the `model` field in the request body |
+| `rewrite_response_model` | Rewrite the `model` field in responses back to the client's model name (default: false) |
+| retry params | `max_retries`, `base_delay_ms`, `max_delay_ms`, `max_total_wait_ms`, `connect_timeout_secs`, `retry_status_codes` |
 
 ## Installation
 

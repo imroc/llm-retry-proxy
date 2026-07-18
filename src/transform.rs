@@ -209,10 +209,11 @@ fn input_to_messages(body: &Value) -> Value {
 // ── Non-streaming response conversion ──────────────────────────────────────
 
 /// Convert a Chat Completions JSON response to Responses API format.
-pub fn chat_response_to_responses(body: &[u8]) -> Option<Bytes> {
+pub fn chat_response_to_responses(body: &[u8], rewrite_model: Option<&str>) -> Option<Bytes> {
     let chat: Value = serde_json::from_slice(body).ok()?;
 
-    let model = chat.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let model =
+        rewrite_model.unwrap_or_else(|| chat.get("model").and_then(|v| v.as_str()).unwrap_or(""));
     let empty_arr = vec![];
     let choices = chat
         .get("choices")
@@ -763,7 +764,7 @@ mod tests {
             }],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
         });
-        let result = chat_response_to_responses(&serde_json::to_vec(&chat).unwrap()).unwrap();
+        let result = chat_response_to_responses(&serde_json::to_vec(&chat).unwrap(), None).unwrap();
         let resp: Value = serde_json::from_slice(&result).unwrap();
         assert_eq!(resp["object"], "response");
         assert_eq!(resp["status"], "completed");

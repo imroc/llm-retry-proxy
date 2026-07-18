@@ -29,7 +29,18 @@ pub fn handle_healthz(
     version: &'static str,
 ) -> http::Response<ResponseBody> {
     let config = config.load();
-    let routes: Vec<&str> = config.route_names();
+    let routes: Vec<serde_json::Value> = config
+        .routes
+        .iter()
+        .map(|(name, route)| {
+            let models: Vec<&str> = route.models.keys().map(|s| s.as_str()).collect();
+            serde_json::json!({
+                "name": name,
+                "target": route.target,
+                "models": models,
+            })
+        })
+        .collect();
     let body = serde_json::json!({
         "ok": true,
         "version": version,

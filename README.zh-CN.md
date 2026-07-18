@@ -18,7 +18,8 @@
 - **流式支持** — SSE 流式透传，不缓冲完整响应
 - **客户端感知** — 即时检测客户端断开（包括退避等待期间），立即停止重试
 - **配置热加载** — 增删路由无需重启
-- **Prometheus 指标** — 监控重试频率和上游状态
+- **模型级路由** — 在单个路由内将不同模型路由到不同上游，支持 Codex 等工具的单 provider 多模型场景
+- **Prometheus 指标** — 按路由 + 模型维度监控重试频率和上游状态
 - **单二进制** — 低内存占用，Rust 实现
 
 ## 快速开始
@@ -59,6 +60,37 @@ target = "https://api.example.com"
 ```
 
 完整示例见 [config.example.toml](./config.example.toml)。
+
+### 模型级路由
+
+当请求体包含 `model` 字段时，代理会在路由的 `models` 映射表中查找。如果命中，模型级配置覆盖路由级配置。这使得单个路由（provider）可以管理来自不同上游的多个模型 —— 非常适合 Codex 等只能在同一 provider 内切换模型的 AI CLI 工具。
+
+```toml
+[routes.tkehub]
+target = "http://tkehub.woa.com"
+transform = "responses_to_chat"  # 路由级默认
+
+# GLM 原生支持 Responses API，直连无需转换
+[routes.tkehub.models."tke/glm-latest"]
+transform = "none"
+
+# DeepSeek 走不同上游，需要模型名映射
+[routes.tkehub.models."tke/deepseek-flash-latest"]
+target = "https://tokenhub.tencentmaas.com"
+upstream_model = "deepseek-chat"
+rewrite_response_model = true
+max_delay_ms = 30000
+```
+
+模型级字段（全部可选，仅指定的字段覆盖路由级配置）：
+
+| 字段 | 说明 |
+|------|------|
+| `target` | 上游 API 地址 |
+| `transform` | `"responses_to_chat"` 或 `"none"` 显式禁用 |
+| `upstream_model` | 改写请求体中的 `model` 字段 |
+| `rewrite_response_model` | 将响应中的 `model` 字段回写为客户端原始模型名（默认 false） |
+| 重试参数 | `max_retries`、`base_delay_ms`、`max_delay_ms`、`max_total_wait_ms`、`connect_timeout_secs`、`retry_status_codes` |
 
 ## 安装
 
