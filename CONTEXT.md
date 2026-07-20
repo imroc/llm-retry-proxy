@@ -1,6 +1,6 @@
-# LLM Retry Proxy
+# LLM Proxy
 
-A transparent local reverse proxy that adds unlimited automatic retry capability to any OpenAI-compatible LLM API, designed for team-shared API scenarios where rate limiting (429) frequently interrupts AI CLI tool sessions.
+A thin local proxy for LLM APIs with automatic retry, protocol transform, and model-level routing, designed for team-shared API scenarios where rate limiting (429) frequently interrupts AI CLI tool sessions.
 
 ## Language
 

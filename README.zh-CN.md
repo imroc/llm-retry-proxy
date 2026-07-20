@@ -1,8 +1,8 @@
-# LLM Retry Proxy
+# LLM Proxy
 
 [English](./README.md)
 
-一个透明的本地反向代理，为任意 OpenAI 兼容的 LLM API 提供无限自动重试能力。专为团队共用 API 限速场景设计，解决 429 限速导致 AI CLI 工具会话频繁中断的问题。
+一个轻量的本地 LLM API 代理，提供自动重试、协议转换和模型级路由能力。专为团队共用 API 限速场景设计，解决 429 限速导致 AI CLI 工具会话频繁中断的问题。
 
 ## 为什么需要？
 
@@ -33,7 +33,7 @@ cp config.example.toml config.toml
 # 编辑 config.toml，配置你的 API 地址
 
 # 运行
-./target/release/llm-retry-proxy --config config.toml --log-level info
+./target/release/llm-proxy --config config.toml --log-level info
 ```
 
 将 AI CLI 工具的 API 地址指向 `http://127.0.0.1:8888/{路由名}/{API路径}`。

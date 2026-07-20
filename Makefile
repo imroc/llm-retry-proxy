@@ -1,6 +1,6 @@
 .PHONY: build run test install update docker lint fmt fmt-check clean
 
-BINARY = llm-retry-proxy
+BINARY = llm-proxy
 TARGET_DIR = target/release
 
 build:
@@ -104,35 +104,35 @@ install-service-system: BIN_PATH :=
 install-service-system:
 	@if [ "$(SERVICE_MANAGER)" = "systemd" ]; then \
 		echo "Installing system-wide systemd service..."; \
-		sudo mkdir -p /etc/llm-retry-proxy /var/log/llm-retry-proxy; \
-		sudo cp config.example.toml /etc/llm-retry-proxy/config.toml; \
+		sudo mkdir -p /etc/llm-proxy /var/log/llm-proxy; \
+		sudo cp config.example.toml /etc/llm-proxy/config.toml; \
 		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
-		    -e 's|__CONFIG_PATH__|/etc/llm-retry-proxy/config.toml|' \
-		    services/llm-retry-proxy.service > /tmp/llm-retry-proxy.service; \
-		sudo cp /tmp/llm-retry-proxy.service /etc/systemd/system/; \
-		rm -f /tmp/llm-retry-proxy.service; \
+		    -e 's|__CONFIG_PATH__|/etc/llm-proxy/config.toml|' \
+		    services/llm-proxy.service > /tmp/llm-proxy.service; \
+		sudo cp /tmp/llm-proxy.service /etc/systemd/system/; \
+		rm -f /tmp/llm-proxy.service; \
 		sudo systemctl daemon-reload; \
-		echo "Service file: /etc/systemd/system/llm-retry-proxy.service"; \
-		echo "Config file:  /etc/llm-retry-proxy/config.toml"; \
+		echo "Service file: /etc/systemd/system/llm-proxy.service"; \
+		echo "Config file:  /etc/llm-proxy/config.toml"; \
 		echo ""; \
 		echo "Enable and start with:"; \
-		echo "  sudo systemctl enable --now llm-retry-proxy"; \
-		echo "  sudo systemctl status llm-retry-proxy"; \
+		echo "  sudo systemctl enable --now llm-proxy"; \
+		echo "  sudo systemctl status llm-proxy"; \
 	elif [ "$(SERVICE_MANAGER)" = "launchd" ]; then \
 		echo "Installing system-wide launchd service..."; \
-		sudo mkdir -p /etc/llm-retry-proxy /var/log/llm-retry-proxy; \
-		sudo cp config.example.toml /etc/llm-retry-proxy/config.toml; \
+		sudo mkdir -p /etc/llm-proxy /var/log/llm-proxy; \
+		sudo cp config.example.toml /etc/llm-proxy/config.toml; \
 		sed -e 's|__BIN_PATH__|$(BIN_PATH)|' \
-		    -e 's|__CONFIG_PATH__|/etc/llm-retry-proxy/config.toml|' \
-		    -e 's|__LOG_PATH__|/var/log/llm-retry-proxy|' \
-		    services/llm-retry-proxy.plist > /tmp/llm-retry-proxy.plist; \
-		sudo cp /tmp/llm-retry-proxy.plist /Library/LaunchDaemons/; \
-		rm -f /tmp/llm-retry-proxy.plist; \
-		echo "Service file: /Library/LaunchDaemons/llm-retry-proxy.plist"; \
-		echo "Config file:  /etc/llm-retry-proxy/config.toml"; \
+		    -e 's|__CONFIG_PATH__|/etc/llm-proxy/config.toml|' \
+		    -e 's|__LOG_PATH__|/var/log/llm-proxy|' \
+		    services/llm-proxy.plist > /tmp/llm-proxy.plist; \
+		sudo cp /tmp/llm-proxy.plist /Library/LaunchDaemons/; \
+		rm -f /tmp/llm-proxy.plist; \
+		echo "Service file: /Library/LaunchDaemons/llm-proxy.plist"; \
+		echo "Config file:  /etc/llm-proxy/config.toml"; \
 		echo ""; \
 		echo "Load with:"; \
-		echo "  sudo launchctl load /Library/LaunchDaemons/llm-retry-proxy.plist"; \
+		echo "  sudo launchctl load /Library/LaunchDaemons/llm-proxy.plist"; \
 	else \
 		echo "No supported service manager found. Skipping."; \
 	fi
@@ -141,7 +141,7 @@ install-service-user: BIN_PATH :=
 install-service-user:
 	@if [ "$(SERVICE_MANAGER)" = "systemd" ]; then \
 		echo "Installing user-level systemd service..."; \
-		CONFIG_DIR="$(HOME)/.config/llm-retry-proxy"; \
+		CONFIG_DIR="$(HOME)/.config/llm-proxy"; \
 		SERVICE_DIR="$(HOME)/.config/systemd/user"; \
 		mkdir -p "$$CONFIG_DIR" "$$SERVICE_DIR"; \
 		cp config.example.toml "$$CONFIG_DIR/config.toml"; \
@@ -149,20 +149,20 @@ install-service-user:
 		sed -e "s|__BIN_PATH__|$(BIN_PATH)|" \
 		    -e "s|__CONFIG_PATH__|$$CONFIG_PATH|" \
 		    -e "s|multi-user.target|default.target|" \
-		    services/llm-retry-proxy.service > "$$SERVICE_DIR/llm-retry-proxy.service"; \
+		    services/llm-proxy.service > "$$SERVICE_DIR/llm-proxy.service"; \
 		systemctl --user daemon-reload; \
-		echo "Service file: $$SERVICE_DIR/llm-retry-proxy.service"; \
+		echo "Service file: $$SERVICE_DIR/llm-proxy.service"; \
 		echo "Config file:  $$CONFIG_PATH"; \
 		echo ""; \
 		echo "Enable and start with:"; \
-		echo "  systemctl --user enable --now llm-retry-proxy"; \
-		echo "  systemctl --user status llm-retry-proxy"; \
+		echo "  systemctl --user enable --now llm-proxy"; \
+		echo "  systemctl --user status llm-proxy"; \
 		echo ""; \
 		echo "Note: For service to survive logout, run:"; \
 		echo "  loginctl enable-linger $$USER"; \
 	elif [ "$(SERVICE_MANAGER)" = "launchd" ]; then \
 		echo "Installing user-level launchd service..."; \
-		CONFIG_DIR="$(HOME)/.config/llm-retry-proxy"; \
+		CONFIG_DIR="$(HOME)/.config/llm-proxy"; \
 		AGENTS_DIR="$(HOME)/Library/LaunchAgents"; \
 		mkdir -p "$$CONFIG_DIR" "$$AGENTS_DIR"; \
 		cp config.example.toml "$$CONFIG_DIR/config.toml"; \
@@ -170,15 +170,15 @@ install-service-user:
 		sed -e "s|__BIN_PATH__|$(BIN_PATH)|" \
 		    -e "s|__CONFIG_PATH__|$$CONFIG_PATH|" \
 		    -e "s|__LOG_PATH__|$$CONFIG_DIR|" \
-		    services/llm-retry-proxy.plist > "$$AGENTS_DIR/llm-retry-proxy.plist"; \
-		echo "Service file: $$AGENTS_DIR/llm-retry-proxy.plist"; \
+		    services/llm-proxy.plist > "$$AGENTS_DIR/llm-proxy.plist"; \
+		echo "Service file: $$AGENTS_DIR/llm-proxy.plist"; \
 		echo "Config file:  $$CONFIG_PATH"; \
 		echo ""; \
 		echo "Load with:"; \
-		echo "  launchctl load $$AGENTS_DIR/llm-retry-proxy.plist"; \
+		echo "  launchctl load $$AGENTS_DIR/llm-proxy.plist"; \
 		echo ""; \
 		echo "Unload with:"; \
-		echo "  launchctl unload $$AGENTS_DIR/llm-retry-proxy.plist"; \
+		echo "  launchctl unload $$AGENTS_DIR/llm-proxy.plist"; \
 	else \
 		echo "No supported service manager found. Skipping."; \
 	fi

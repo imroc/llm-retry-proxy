@@ -1,5 +1,5 @@
 // Bring crate into scope for tests
-use llm_retry_proxy::{config, metrics, server};
+use llm_proxy::{config, metrics, server};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;

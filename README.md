@@ -1,8 +1,8 @@
-# LLM Retry Proxy
+# LLM Proxy
 
 [中文文档](./README.zh-CN.md)
 
-A transparent local reverse proxy that adds unlimited automatic retry to any OpenAI-compatible LLM API. Designed for team-shared API scenarios where rate limiting (429) frequently interrupts AI CLI tool sessions.
+A thin local proxy for LLM APIs with automatic retry, protocol transform, and model-level routing. Designed for team-shared API scenarios where rate limiting (429) frequently interrupts AI CLI tool sessions.
 
 ## Why?
 
@@ -33,7 +33,7 @@ cp config.example.toml config.toml
 # Edit config.toml to point to your API
 
 # Run
-./target/release/llm-retry-proxy --config config.toml --log-level info
+./target/release/llm-proxy --config config.toml --log-level info
 ```
 
 Point your AI CLI tool's API URL to `http://127.0.0.1:8888/{route_name}/{api_path}`.

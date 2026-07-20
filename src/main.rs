@@ -1,4 +1,4 @@
-use llm_retry_proxy::{config, log, metrics, server};
+use llm_proxy::{config, log, metrics, server};
 
 use arc_swap::ArcSwap;
 use clap::Parser;
@@ -12,7 +12,7 @@ use tracing::info;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "llm-retry-proxy", version = VERSION, about = "Transparent local reverse proxy with unlimited automatic retry for OpenAI-compatible LLM APIs")]
+#[command(name = "llm-proxy", version = VERSION, about = "Thin local proxy for LLM APIs with automatic retry, protocol transform, and model-level routing")]
 struct Args {
     /// Path to config file
     #[arg(short, long, default_value = "config.toml")]
@@ -57,7 +57,7 @@ async fn main() {
 
     let route_names = config.route_names();
     info!(
-        "llm-retry-proxy v{} starting, listening on http://{}, routes: {}",
+        "llm-proxy v{} starting, listening on http://{}, routes: {}",
         VERSION,
         addr,
         route_names.join(", ")

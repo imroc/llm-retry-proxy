@@ -1,5 +1,5 @@
 [Unit]
-Description=LLM Retry Proxy
+Description=LLM Proxy
 After=network.target
 
 [Service]

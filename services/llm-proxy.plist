@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>llm-retry-proxy</string>
+    <string>llm-proxy</string>
     <key>ProgramArguments</key>
     <array>
         <string>__BIN_PATH__</string>
@@ -17,8 +17,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>__LOG_PATH__/llm-retry-proxy.log</string>
+    <string>__LOG_PATH__/llm-proxy.log</string>
     <key>StandardErrorPath</key>
-    <string>__LOG_PATH__/llm-retry-proxy.log</string>
+    <string>__LOG_PATH__/llm-proxy.log</string>
 </dict>
 </plist>
