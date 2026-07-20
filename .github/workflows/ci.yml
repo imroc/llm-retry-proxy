@@ -52,11 +52,11 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
       - name: Rename binary with target suffix
         run: |
-          cp target/${{ matrix.target }}/release/llm-retry-proxy llm-retry-proxy-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/llm-proxy llm-proxy-${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: llm-retry-proxy-${{ matrix.target }}
-          path: llm-retry-proxy-${{ matrix.target }}
+          name: llm-proxy-${{ matrix.target }}
+          path: llm-proxy-${{ matrix.target }}
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -70,5 +70,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            llm-retry-proxy-*/llm-retry-proxy-*
+            llm-proxy-*/llm-proxy-*
           generate_release_notes: true
